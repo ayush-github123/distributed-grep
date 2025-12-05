@@ -1,8 +1,12 @@
 package mapreduce
 
 import (
+	"bufio"
+	"distGrep/internals/types"
+	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"sync"
 )
 
@@ -11,9 +15,9 @@ type KeyValue struct {
 	Value string
 }
 
-type Mapper interface {
-	Map(task Task) ([]KeyValue, error)
-}
+// type Mapper interface {
+// 	Map(task Task) ([]KeyValue, error)
+// }
 
 type Reducer interface {
 	Reduce(key string, values []string) (string, error)
@@ -24,15 +28,15 @@ type Task struct {
 }
 
 type Job struct {
-	Mapper  Mapper
+	// Mapper  Mapper
 	Pattern string
 	Reducer Reducer
 	Tasks   []Task
-	Workers	[]string
+	Workers []string
 	logger  *log.Logger
 }
 
-func NewJob(pattern string, mapper Mapper, reducer Reducer, tasks []Task, workers []string) *Job {
+func NewJob(pattern string, reducer Reducer, tasks []Task, workers []string) *Job {
 	logFile, err := os.OpenFile("distgrep.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		log.Fatalf("Error creating log file: %v", err)
@@ -41,13 +45,53 @@ func NewJob(pattern string, mapper Mapper, reducer Reducer, tasks []Task, worker
 	logger := log.New(logFile, "[DistGrep] ", log.Ldate|log.Ltime|log.Lshortfile)
 
 	return &Job{
-		Mapper:  mapper,
+		// Mapper:  mapper,
 		Pattern: pattern,
 		Reducer: reducer,
 		Tasks:   tasks,
 		Workers: workers,
 		logger:  logger,
 	}
+}
+
+func MapPhase(pattern, path string) ([]types.KeyValue, error) {
+	log.Printf("[Worker] Running map on file=%s pattern=%q", path, pattern)
+
+	regPattern, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("invalid regex pattern %q: %w", pattern, err)
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("error opening file %q: %w", path, err)
+	}
+	defer file.Close()
+
+	var kvs []types.KeyValue
+
+	scanner := bufio.NewScanner(file)
+	lineNum := 0
+
+	for scanner.Scan() {
+		lineNum++
+		text := scanner.Text()
+
+		if regPattern.MatchString(text) {
+			key := fmt.Sprintf("%s:%d", path, lineNum)
+			kvs = append(kvs, types.KeyValue{
+				Key:   key,
+				Value: text,
+			})
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("error reading file %q: %w", path, err)
+	}
+
+	log.Printf("[Worker] Completed map on file=%s. %d matches.", path, len(kvs))
+	return kvs, nil
 }
 
 func (j *Job) Execute() (map[string]string, error) {
@@ -66,7 +110,7 @@ func (j *Job) Execute() (map[string]string, error) {
 		go func(t Task, idx int) {
 			defer wg.Done()
 
-			worker := j.Workers[idx % len(j.Workers)]
+			worker := j.Workers[idx%len(j.Workers)]
 			j.logger.Printf("[MASTER] Assigning %s to %s\n", t.Path, worker)
 
 			kvs, err := callWorkerMap(worker, j.Pattern, task.Path)
@@ -95,6 +139,7 @@ func (j *Job) Execute() (map[string]string, error) {
 	j.logger.Println("Starting Reduce Phase")
 	results := make(map[string]string)
 
+	fmt.Print(intermediates)
 	for key, vals := range intermediates {
 		j.logger.Printf("Reducing key: %s\n", key)
 		out, err := j.Reducer.Reduce(key, vals)
