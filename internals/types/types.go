@@ -14,3 +14,12 @@ type MapRequest struct {
 type MapResponse struct {
 	KVs []KeyValue `json:"kvs"`
 }
+
+type RunRequest struct {
+	Pattern string   `json:"pattern"`
+	Files   []string `json:"files"`
+}
+
+type RunResponse struct {
+	Results map[string]string `json:"results"`
+}
