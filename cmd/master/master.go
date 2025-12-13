@@ -1,14 +1,17 @@
 package master
 
 import (
-	"distGrep/internals/grep"
-	"distGrep/internals/mapreduce"
-	"distGrep/internals/types"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
+	
+	"distGrep/internals/grep"
+	"distGrep/internals/mapreduce"
+	"distGrep/internals/types"
 )
 
 var (
@@ -41,19 +44,18 @@ func GetWorkers() []string {
 	return append([]string{}, workers...)
 }
 
-
 func HandleRunJob(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost{
+	if r.Method != http.MethodPost {
 		http.Error(w, "Mehod not allowed", http.StatusMethodNotAllowed)
 	}
 
 	var req types.RunRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err!=nil{
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Error while decoding", http.StatusInternalServerError)
 	}
 
 	pattern := req.Pattern
-	if pattern == ""{
+	if pattern == "" {
 		http.Error(w, "Enter the pattern to GREP", http.StatusServiceUnavailable)
 		return
 	}
@@ -69,12 +71,25 @@ func HandleRunJob(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no workers available", http.StatusServiceUnavailable)
 		return
 	}
-	
-	tasks := make([]mapreduce.Task, len(files))
-	for i, f := range files{
-		tasks[i] = mapreduce.Task{Path: f}
+
+	// tasks := make([]mapreduce.Task, len(files))
+	var tasks []mapreduce.Task	//slice can grow sizes with increasing data in it
+	for _, f := range files {
+		fileInfo, err := os.Stat(f)
+		if err!=nil{
+			fmt.Printf("Error reading the file, %v", err)
+		}
+
+		if fileInfo.IsDir(){
+			HandleDirs(f, &tasks)
+			// fmt.Printf("Its a directory")
+		}else{
+			// tasks[i] = mapreduce.Task{Path: f}	//now useless as we are reading dir inside dir and all share the same slice:  tasks
+			tasks = append(tasks, mapreduce.Task{Path: f})
+
+		}
 	}
-	// fmt.Println(tasks)
+	// fmt.Printf("TASKS ARE : %v\n", tasks) 
 	job := mapreduce.NewJob(pattern, &grep.GrepReducer{}, tasks, workers)
 
 	results, err := job.Execute()
@@ -86,4 +101,26 @@ func HandleRunJob(w http.ResponseWriter, r *http.Request) {
 
 	resp := types.RunResponse{Results: results}
 	json.NewEncoder(w).Encode(resp)
+}
+
+
+func HandleDirs(path string, tasks *[]mapreduce.Task) error {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		fmt.Print(err)
+		return err
+	}
+
+	for _, entry := range entries {
+		fullPath := filepath.Join(path, entry.Name())	//read full path instead of just file name
+		
+		if entry.IsDir() {		//if there is a dir inside a dir then again run the func -> recursive call :)
+			HandleDirs(entry.Name(), tasks)
+		} else {
+			// fmt.Printf("%v\n", entry.Name())
+			*tasks = append(*tasks, mapreduce.Task{Path: fullPath})
+		}
+	}
+	return nil
+
 }
